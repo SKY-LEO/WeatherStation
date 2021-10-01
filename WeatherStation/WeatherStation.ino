@@ -7,6 +7,11 @@
 #include <RH_ASK.h>
 #include <RTClib.h>
 #include <Adafruit_HTU21DF.h>
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <HTTPUpdate.h>
+#include <WiFiClientSecure.h>
+#include "cert.h"
 #include "opensans8b.h"
 #include "opensans10b.h"
 #include "opensans12b.h"
@@ -18,13 +23,16 @@
 #include "OpenSans64b.h"
 #include "OpenSans48b.h"
 #include "OpenSans48.h"
+#include "picture.h"
+#define URL_Firmware_Version "https://raw.githubusercontent.com/SKY-LEO/WeatherStation/main/WeatherStation/version.txt"
+#define URL_Firmware_Bin "https://raw.githubusercontent.com/SKY-LEO/WeatherStation/main/WeatherStation/WeatherStation.ino.esp32.bin"
 #define PERIOD_WAITING 20000 //milliseconds
+#define PERIOD_WAITING1 10000 //milliseconds
 #define SEALEVELPRESSURE_HPA (1013.25)
 #define SCREEN_WIDTH   EPD_WIDTH
 #define SCREEN_HEIGHT  EPD_HEIGHT
 #define I2C_SDA 14
 #define I2C_SCL 15
-enum alignment {LEFT, RIGHT, CENTER};
 #define White         0xFF
 #define LightGrey     0xBB
 #define Grey          0x88
@@ -34,6 +42,10 @@ enum alignment {LEFT, RIGHT, CENTER};
 #define autoscale_off false
 #define barchart_on   true
 #define barchart_off  false
+enum alignment {LEFT, RIGHT, CENTER};
+const char * ssid = "ssid";
+const char * password = "password";
+String FirmwareVer = {"0.8"};
 int vref = 1100;
 long StartTime = 0;
 long SleepTimer = 1200;
@@ -61,6 +73,7 @@ RTC_DATA_ATTR int temp8 = 0;
 RTC_DATA_ATTR int temp9 = 0;
 RTC_DATA_ATTR int Z = 0;
 RTC_DATA_ATTR int prevZ = 0;
+RTC_DATA_ATTR int VersionCheck = 5;
 int altitude;   // Here you should put the REAL altitude
 RH_ASK driver(2000, 12, NO_PIN);
 Adafruit_HTU21DF htu = Adafruit_HTU21DF();
@@ -76,9 +89,10 @@ char daysOfTheWeek[7][12] = {"Sunday", "Monday", "Tuesday", "Wednesday", "Thursd
 void setup()
 {
   InitialiseSystem();
+  InternetServices();
   GetWeather();
   epd_poweron();      // Switch on EPD display
-  epd_clear();        // Clear the screen
+  epd_clear();     // Clear the screen
   DisplayWeather();   // Display the weather data
   edp_update();       // Update the display to show the information
   poweroff_output(13);
@@ -112,6 +126,219 @@ void InitialiseSystem()
   framebuffer = (uint8_t *)ps_calloc(sizeof(uint8_t), EPD_WIDTH * EPD_HEIGHT / 2);
   if (!framebuffer) Serial.println("Memory alloc failed!");
   memset(framebuffer, 0xFF, EPD_WIDTH * EPD_HEIGHT / 2);
+}
+
+void InternetServices()
+{
+  if (CheckInternet())
+  {
+    if (VersionCheck > 4)
+    {
+      if (FirmwareVersionCheck())
+      {
+        VersionCheck = 0;
+        long StartTime = millis();
+        long Time = 0;
+        bool flag = 0;
+        pinMode(35, INPUT);
+        pinMode(39, INPUT);
+        epd_poweron();
+        epd_clear();
+        setFont(OpenSans32B);
+        drawString1(70, 250, "New version is available.", LEFT);
+        drawString1(50, 300, "Install this update?(10sec)", LEFT);
+        setFont(OpenSans26B);
+        drawString1(335, 40, "YES", LEFT);
+        drawString1(477, 40, "NO", LEFT);
+        Rect_t area = {
+          .x = 365,
+          .y = 00,
+          .width = picture_width,
+          .height =  picture_height
+        };
+        Rect_t area1 = {
+          .x = 500,
+          .y = 0,
+          .width = picture_width,
+          .height =  picture_height
+        };
+        epd_draw_grayscale_image(area, (uint8_t *) picture_data);
+        epd_draw_grayscale_image(area1, (uint8_t *) picture_data);
+        while (flag != 1 && Time < PERIOD_WAITING1)
+        {
+          Time = millis() - StartTime;
+          if (!digitalRead(35))
+          {
+            Serial.println("Update has begun");
+            firmwareUpdate();
+            flag = 1;
+          } else if (!digitalRead(39))
+          {
+            Serial.println("Update canceled");
+            flag = 1;
+          }
+        }
+      }
+    } else
+    {
+      VersionCheck++;
+    }
+  }
+}
+
+bool CheckInternet()
+{
+  long StartTime = millis();
+  long Time = 0;
+  Serial.println("Waiting for WiFi");
+  WiFi.begin(ssid, password);
+  while (WiFi.status() != WL_CONNECTED && Time < PERIOD_WAITING)
+  {
+    Time = millis() - StartTime;
+    delay(500);
+    Serial.print(".");
+  }
+  if (WiFi.status() == WL_CONNECTED)
+  {
+    Serial.println("");
+    Serial.println("WiFi connected");
+    return true;
+  } else
+  {
+    Serial.println("");
+    Serial.println("NO INTERNET!!!");
+    return false;
+  }
+}
+
+bool FirmwareVersionCheck()
+{
+  String payload;
+  int httpCode;
+  String firmwareurl = "";
+  firmwareurl += URL_Firmware_Version;
+  firmwareurl += "?";
+  firmwareurl += String(rand());
+  Serial.println(firmwareurl);
+  WiFiClientSecure * client = new WiFiClientSecure;
+  if (client)
+  {
+    client -> setCACert(rootCACertificate);
+    // Add a scoping block for HTTPClient https to make sure it is destroyed before WiFiClientSecure *client is
+    HTTPClient https;
+    if (https.begin( * client, firmwareurl))
+    { // HTTPS
+      Serial.print("[HTTPS] GET...\n");
+      // start connection and send HTTP header
+      delay(100);
+      httpCode = https.GET();
+      delay(100);
+      if (httpCode == HTTP_CODE_OK) // if version received
+      {
+        payload = https.getString(); // save received version
+      } else {
+        Serial.print("error in downloading version file:");
+        Serial.println(httpCode);
+      }
+      https.end();
+    }
+    delete client;
+  }
+  if (httpCode == HTTP_CODE_OK) // if version received
+  {
+    payload.trim();
+    if (payload.equals(FirmwareVer)) {
+      Serial.printf("\nDevice already on latest firmware version:%s\n", FirmwareVer);
+      return false;
+    }
+    else
+    {
+      Serial.println(payload);
+      Serial.println("New firmware detected");
+      return true;
+    }
+  }
+  return false;
+}
+
+void firmwareUpdate()
+{
+  WiFiClientSecure client;
+  client.setCACert(rootCACertificate);
+  t_httpUpdate_return ret = httpUpdate.update(client, URL_Firmware_Bin);
+  switch (ret)
+  {
+    case HTTP_UPDATE_FAILED:
+      Serial.printf("HTTP_UPDATE_FAILD Error (%d): %s\n", httpUpdate.getLastError(), httpUpdate.getLastErrorString().c_str());
+      break;
+    case HTTP_UPDATE_NO_UPDATES:
+      Serial.println("HTTP_UPDATE_NO_UPDATES");
+      break;
+    case HTTP_UPDATE_OK:
+      Serial.println("HTTP_UPDATE_OK");
+      break;
+  }
+}
+
+void GetWeather()
+{
+  uint8_t buf[RH_ASK_MAX_MESSAGE_LEN];
+  uint8_t buflen = sizeof(buf);
+  bool flagrec = 0;
+  int i = 0;
+  long StartTime = millis();
+  long Time = 0;
+  Serial.print("Waiting data from indoor sensor...");
+  indoor_temperature = htu.readTemperature();
+  indoor_humidity = htu.readHumidity();
+  Serial.println("GOT!");
+  Serial.println("Indoor:");
+  Serial.print("Temperature: ");
+  Serial.print(indoor_temperature);
+  Serial.println(" °C");
+  Serial.print("Humidity: ");
+  Serial.print(indoor_humidity);
+  Serial.println(" %");
+  while (Time < PERIOD_WAITING && flagrec != 1)
+  {
+    Time = millis() - StartTime;
+    for (i; i < 1; i++)
+    {
+      Serial.print("Waiting data from outdoor sensor...");
+    }
+    if (driver.recv(buf, &buflen))
+    {
+      Serial.println("GOT!");
+      memcpy(&mydata, buf, sizeof(mydata));
+      outdoor_temperature = mydata.temp;
+      outdoor_temperature /= 100;
+      outdoor_pressurehPa = mydata.pres;
+      outdoor_pressurehPa /= 100;
+      outdoor_pressuremmHg = outdoor_pressurehPa / 1.333;
+      outdoor_humidity = mydata.hum;
+      outdoor_humidity /= 100;
+      outdoor_voltage = mydata.vcc;
+      outdoor_voltage /= 1000;
+      Serial.println("Outdoor:");
+      Serial.print("Temperature: ");
+      Serial.print(outdoor_temperature);
+      Serial.println(" °C");
+      Serial.print("Pressure: ");
+      Serial.print(outdoor_pressuremmHg);
+      Serial.println(" mmHg");
+      Serial.print("Humidity: ");
+      Serial.print(outdoor_humidity);
+      Serial.println(" %");
+      Serial.print("Battery voltage: ");
+      Serial.print(outdoor_voltage);
+      Serial.println("v");
+      flagrec = 1;
+    }
+  }
+  if (flagrec == 0)
+  {
+    Serial.println("NO DATA FROM OUTDOOR SENSOR!!! CHECK BATTERY AND CONNECTION!!!");
+  }
 }
 
 void DisplayWeather()
@@ -173,68 +400,6 @@ void DisplayMainWeatherSection(int x, int y)
   DisplayIndoorSection(x + 375, y + 200);
   //DisplayForecastTextSection(x - 55, y + 25);
   DisplayNamings(x + 245, y + 248);
-}
-
-void GetWeather()
-{
-  uint8_t buf[RH_ASK_MAX_MESSAGE_LEN];
-  uint8_t buflen = sizeof(buf);
-  bool flagrec = 0;
-  int i = 0;
-  long Time = 0;
-  Serial.print("Waiting data from indoor sensor...");
-  indoor_temperature = htu.readTemperature();
-  indoor_humidity = htu.readHumidity();
-  Serial.println("GOT!");
-  Serial.println("Indoor:");
-  Serial.print("Temperature: ");
-  Serial.print(indoor_temperature);
-  Serial.println(" °C");
-  Serial.print("Humidity: ");
-  Serial.print(indoor_humidity);
-  Serial.println(" %");
-  while (Time < PERIOD_WAITING && flagrec != 1)
-  {
-    Time = millis() - StartTime;
-    for (i; i < 1; i++)
-    {
-      Serial.print("Waiting data from outdoor sensor...");
-    }
-    if (driver.recv(buf, &buflen))
-    {
-      Serial.println("GOT!");
-      memcpy(&mydata, buf, sizeof(mydata));
-      outdoor_temperature = mydata.temp;
-      outdoor_temperature /= 100;
-      outdoor_pressurehPa = mydata.pres;
-      //outdoor_pressurehPa = outdoor_pressurehPa + SEALEVELPRESSURE_HPA;
-      outdoor_pressurehPa /= 100;
-      outdoor_pressuremmHg = outdoor_pressurehPa / 1.333;
-      outdoor_humidity = mydata.hum;
-      outdoor_humidity /= 100;
-      outdoor_voltage = mydata.vcc;
-      outdoor_voltage /= 1000;
-      //outdoor_temperature = -10.90;
-      Serial.println("Outdoor:");
-      Serial.print("Temperature: ");
-      Serial.print(outdoor_temperature);
-      Serial.println(" °C");
-      Serial.print("Pressure: ");
-      Serial.print(outdoor_pressuremmHg);
-      Serial.println(" mmHg");
-      Serial.print("Humidity: ");
-      Serial.print(outdoor_humidity);
-      Serial.println(" %");
-      Serial.print("Battery voltage: ");
-      Serial.print(outdoor_voltage);
-      Serial.println("v");
-      flagrec = 1;
-    }
-  }
-  if (flagrec == 0)
-  {
-    Serial.println("NO DATA FROM OUTDOOR SENSOR!!! CHECK BATTERY AND CONNECTION!!!");
-  }
 }
 
 void DisplayOutdoorSection(int x, int y)
@@ -314,6 +479,19 @@ void drawString(int x, int y, String text, alignment align)
   if (align == CENTER) x = x - w / 2;
   int cursor_y = y + h;
   write_string(&currentFont, data, &x, &cursor_y, framebuffer);
+}
+
+void drawString1(int x, int y, String text, alignment align)
+{
+  char * data  = const_cast<char*>(text.c_str());
+  int  x1, y1;
+  int w, h;
+  int xx = x, yy = y;
+  get_text_bounds(&currentFont, data, &xx, &yy, &x1, &y1, &w, &h, NULL);
+  if (align == RIGHT)  x = x - w;
+  if (align == CENTER) x = x - w / 2;
+  int cursor_y = y + h;
+  write_string(&currentFont, data, &x, &cursor_y, NULL);
 }
 
 void fillCircle(int x, int y, int r, uint8_t color)
