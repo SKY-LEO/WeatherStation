@@ -45,9 +45,9 @@
 enum alignment {LEFT, RIGHT, CENTER};
 const char * ssid = "ssid";
 const char * password = "password";
-String FirmwareVer = {"0.8"};
+String FirmwareVer = {"0.8.1"};
 int vref = 1100;
-long StartTime = 0;
+long StartTime_GLOBAL = 0;
 long SleepTimer = 1200;
 float outdoor_temperature = 0;
 float outdoor_humidity = 0;
@@ -102,7 +102,7 @@ void setup()
 
 void InitialiseSystem()
 {
-  StartTime = millis();
+  StartTime_GLOBAL = millis();
   Serial.begin(115200);
   Serial.println("Starting...");
   pinMode(13, OUTPUT);
@@ -122,6 +122,8 @@ void InitialiseSystem()
     Serial.println("Couldn't find sensor HTU21D!");
     while (1);
   }
+  pinMode(35, INPUT);
+  pinMode(39, INPUT);
   epd_init();
   framebuffer = (uint8_t *)ps_calloc(sizeof(uint8_t), EPD_WIDTH * EPD_HEIGHT / 2);
   if (!framebuffer) Serial.println("Memory alloc failed!");
@@ -140,8 +142,6 @@ void InternetServices()
         long StartTime = millis();
         long Time = 0;
         bool flag = 0;
-        pinMode(35, INPUT);
-        pinMode(39, INPUT);
         epd_poweron();
         epd_clear();
         setFont(OpenSans32B);
